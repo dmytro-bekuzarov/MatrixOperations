@@ -1,75 +1,79 @@
 #include "stdafx.h"
-#include "Matrix.h"
-#include <stdexcept>
+#include "SMatrix.h"
 
 
-//удаление матрицы из памяти
-void Matrix::del(matrix m, int size)
+float* SMatrix::init(int size)
 {
-	for (int i = 0; i < size; i++)
-		delete[] m[i];
-	delete[] m;
+	return (float*)_aligned_malloc(size * sizeof(float), 16);
 }
 
-//сложение матриц
-matrix Matrix::add(matrix a, matrix b, int size)
+matrix SMatrix::init2(int size)
 {
-	matrix c = new float*[size];
+	return (matrix)_aligned_malloc(size * sizeof(float*), 16);
+}
+
+void SMatrix::del(matrix m, int size)
+{
+	_aligned_free(m);
+}
+
+matrix SMatrix::add(matrix a, matrix b, int size)
+{
+	matrix c = init2(size);
 	for (int i = 0; i < size; i++){
-		c[i] = new float[size];
-		for (int j = 0; j < size; j++){
-			c[i][j] = a[i][j] + b[i][j];
+		c[i] = init(size);
+		__m128* pa = (__m128*)a[i];
+		__m128* pb = (__m128*)b[i];
+		__m128* pc = (__m128*)c[i];
+		for (int j = 0; j < size >> 2; ++j){
+			pc[j] = _mm_add_ps(pa[j], pb[j]);
 		}
 	}
 	return c;
 }
 
-//сложение трех матриц (для винограда-штрассена)
-matrix Matrix::add(matrix a, matrix b, matrix c, int size)
+matrix SMatrix::subtract(matrix a, matrix b, int size)
 {
-	matrix d = new float*[size];
+	matrix c = init2(size);
 	for (int i = 0; i < size; i++){
-		d[i] = new float[size];
-		for (int j = 0; j < size; j++){
-			d[i][j] = a[i][j] + b[i][j] + c[i][j];
-		}
-	}
-	return d;
-}
-
-//вычитание матриц
-matrix Matrix::subtract(matrix a, matrix b, int size)
-{
-	matrix c = new float*[size];
-	for (int i = 0; i < size; i++){
-		c[i] = new float[size];
-		for (int j = 0; j < size; j++){
-			c[i][j] = a[i][j] - b[i][j];
+		c[i] = init(size);
+		__m128* pa = (__m128*)a[i];
+		__m128* pb = (__m128*)b[i];
+		__m128* pc = (__m128*)c[i];
+		for (int j = 0; j < size >> 2; ++j){
+			pc[j] = _mm_sub_ps(pa[j], pb[j]);
 		}
 	}
 	return c;
 }
 
-//умножение матриц (оптимизированный с тчоки зрения кеша алгоритм )
-matrix Matrix::multiply(matrix a, matrix b, int size)
+matrix SMatrix::multiply(matrix a, matrix b, int size)
 {
-	matrix c = new float*[size];
-	for (int i = 0; i < size; i++){
-		c[i] = new float[size]();
-		for (int j = 0; j < size; j++){
-			for (int z = 0; z < size; z++)
-				c[i][z] += a[i][j] * b[j][z];
+	matrix c = init2(size);
+	for (int i = 0; i < size; ++i){
+		c[i] = init(size);
+		for (int j = 0; j < size; ++j){
+			c[i][j] = 0;
+		}
+	}
+	for (int i = 0; i < size; ++i){
+		__m128* pc = (__m128*)c[i];
+		for (int j = 0; j < size; ++j){
+			__m128* pb = (__m128*)b[j];
+			__m128 pa = _mm_set1_ps(a[i][j]);
+			for (int z = 0; z < size >> 2; ++z){
+				pc[z] = _mm_add_ps(pc[z], _mm_mul_ps(pa, pb[z]));
+			}
 		}
 	}
 	return c;
 }
 
-//умножение матриц (алгоритм винограда-штрассена)
-matrix Matrix::multiplyLarge(matrix a, matrix b, int size)
+matrix SMatrix::multiplyLarge(matrix a, matrix b, int size)
 {
-	if (size <= 128)
+	if (size <= 512)
 		return multiply(a, b, size);
-	int h = size / 2;
+	int h = size >> 1;
 	matrix a11 = getPart(a, h, 0, 0);
 	matrix a12 = getPart(a, h, 0, h);//top right corner
 	matrix a21 = getPart(a, h, h, 0);//bottom left corner
@@ -111,16 +115,17 @@ matrix Matrix::multiplyLarge(matrix a, matrix b, int size)
 	del(p4, h);
 	matrix c11 = add(p2, p3, h);
 	del(p2, h); del(p3, h);
-	matrix c12 = add(t1, p5, p6, h);
-	del(p6, h); del(t1, h);
+	matrix c12temp = add(t1, p5, h);
+	matrix c12 = add(c12temp, p6, h);
+	del(p6, h); del(t1, h); del(c12temp, h);
 	matrix c21 = subtract(t2, p7, h);
 	del(p7, h);
 	matrix c22 = add(t2, p5, h);
 	del(p5, h); del(t2, h);
 
-	matrix m = new float*[size];
+	matrix m = init2(size);
 	for (int i = 0; i < size; i++)
-		m[i] = new float[size];
+		m[i] = init(size);
 	for (int i = 0; i < h; i++){
 		for (int j = 0; j < h; j++){
 			m[i][j] = c11[i][j];
@@ -137,26 +142,29 @@ matrix Matrix::multiplyLarge(matrix a, matrix b, int size)
 	return m;
 }
 
-//нахождение обратной  матрицы
-matrix Matrix::inversion(matrix m, int size)
+matrix SMatrix::inversion(matrix m, int size)
 {
-	matrix a = new float*[size];
-	for (int i = 0; i < size; i++)
+	matrix a = init2(size);
+	for (int i = 0; i < size; ++i)
 	{
-		a[i] = new float[size];
-		for (int j = 0; j < size; j++)
+		a[i] = init(size);
+		for (int j = 0; j < size; ++j)
 		{
 			a[i][j] = m[i][j];
 		}
 	}
 	//создаем единичную матрицу
-	float** e = new float*[size];
+	matrix e = init2(size);
 	for (int i = 0; i < size; i++)
 	{
-		e[i] = new float[size]();
+		e[i] = init(size);
+		for (int j = 0; j < size; ++j)
+		{
+			e[i][j] = 0;
+		}
 		e[i][i] = 1.0f;
 	}
-	for (int k = 0; k < size; k++)
+	for (int k = 0; k < size >> 2; ++k)
 	{
 		if (a[k][k] == 0)
 		{
@@ -181,10 +189,13 @@ matrix Matrix::inversion(matrix m, int size)
 		}
 
 		float temp = (int)a[k][k];
-		for (int j = 0; j < size; j++)
+		__m128 temp128 = _mm_set1_ps(temp);
+		for (int j = 0; j < size; ++j)
 		{
-			a[k][j] /= temp;
-			e[k][j] /= temp;
+			__m128* pa = (__m128*)a[k];
+			__m128* pe = (__m128*)e[k];
+			pa[k] = _mm_div_ps(*pa, temp128);
+			pe[k] = _mm_div_ps(*pe, temp128);
 		}
 		//Генерим нолики в левом нижнем углу
 		for (int i = k + 1; i < size; i++)
@@ -217,8 +228,7 @@ matrix Matrix::inversion(matrix m, int size)
 	return e;
 }
 
-//деление матриц
-matrix Matrix::divide(matrix a, matrix b, int size)
+matrix SMatrix::divide(matrix a, matrix b, int size)
 {
 	matrix r = inversion(b, size);
 	matrix res = multiplyLarge(a, r, size);
@@ -226,12 +236,11 @@ matrix Matrix::divide(matrix a, matrix b, int size)
 	return res;
 }
 
-//нахождение 1/4 матрицы
-matrix Matrix::getPart(matrix values, int size, int startRow, int startColumn)
+matrix SMatrix::getPart(matrix values, int size, int startRow, int startColumn)
 {
-	matrix c = new float *[size];
+	matrix c = init2(size);
 	for (int i = 0, i2 = startRow; i < size; i++, i2++) {
-		c[i] = new float[size];
+		c[i] = init(size);
 		for (int j = 0, j2 = startColumn; j < size; j++, j2++) {
 			c[i][j] = values[i2][j2];
 		}
@@ -239,31 +248,32 @@ matrix Matrix::getPart(matrix values, int size, int startRow, int startColumn)
 	return c;
 }
 
-Matrix::Matrix()
+SMatrix* SMatrix::Create()
 {
+	return (SMatrix*)_aligned_malloc(sizeof(SMatrix*), 16);
 }
 
-//заполняет матрицу радномными числами
-Matrix::Matrix(int size, int maxRandom)
+SMatrix* SMatrix::Create(int size, int maxRandom)
 {
-	this->size = size;
-	values = new float*[size];
+	SMatrix* m = Create();
+	m->size = size;
+	m->values = init2(size);
 	for (int i = 0; i < size; i++){
-		values[i] = new float[size];
+		m->values[i] = init(size);
 		for (int j = 0; j < size; j++){
-			values[i][j] = (float)(rand() % maxRandom) + 1;
+			m->values[i][j] = (float)(rand() % maxRandom) + 1;
 		}
 	}
+	return m;
 }
 
 
-Matrix::~Matrix()
+SMatrix::~SMatrix()
 {
 	del(values, size);
 }
 
-//вывод матрицы в консоль
-void Matrix::Print()
+void SMatrix::Print()
 {
 	if (values == nullptr)
 		return;
@@ -277,78 +287,77 @@ void Matrix::Print()
 	printf("***********\n");
 }
 
-Matrix* Matrix::Add(Matrix* a, Matrix* b)
+SMatrix* SMatrix::Add(SMatrix* a, SMatrix* b)
 {
 	if (a->size != b->size)
 	{
 		printf("Sizes do not match");
 		return nullptr;
 	}
-	Matrix* m = new Matrix();
+	SMatrix* m = Create();
 	m->values = add(a->values, b->values, a->size);
 	m->size = a->size;
 	return m;
 }
 
-Matrix* Matrix::Subtract(Matrix* a, Matrix* b)
+SMatrix* SMatrix::Subtract(SMatrix* a, SMatrix* b)
 {
 	if (a->size != b->size)
 	{
-		printf("Sizes do not match");
+		_tprintf(_T("Sizes do not match"));
 		return nullptr;
 	}
-	Matrix* m = new Matrix();
+	SMatrix* m = Create();
 	m->values = subtract(a->values, b->values, a->size);
 	m->size = a->size;
 	return m;
 }
 
-Matrix* Matrix::Multiply(Matrix* a, Matrix* b)
+SMatrix* SMatrix::Multiply(SMatrix* a, SMatrix* b)
 {
 	if (a->size != b->size)
 	{
-		printf("Sizes do not match");
+		_tprintf(_T("Sizes do not match"));
 		return nullptr;
 	}
-	Matrix* m = new Matrix();
+	SMatrix* m = Create();
 	m->values = multiply(a->values, b->values, a->size);
 	m->size = a->size;
 	return m;
 }
 
-Matrix* Matrix::MultiplyLarge(Matrix* a, Matrix* b)
+SMatrix* SMatrix::MultiplyLarge(SMatrix* a, SMatrix* b)
 {
 	if (a->size != b->size)
 	{
-		printf("Sizes do not match");
+		_tprintf(_T("Sizes do not match"));
 		return nullptr;
 	}
-
-	Matrix* m = new Matrix();
+	SMatrix* m = Create();
 	m->values = multiplyLarge(a->values, b->values, a->size);
 	m->size = a->size;
 	return m;
 }
 
-Matrix* Matrix::Divide(Matrix* a, Matrix* b)
+SMatrix* SMatrix::Divide(SMatrix* a, SMatrix* b)
 {
 	if (a->size != b->size)
 	{
-		printf("Sizes do not match");
+		_tprintf(_T("Sizes do not match"));
 		return nullptr;
 	}
-	Matrix* m = new Matrix();
+	SMatrix* m = Create();
 	m->values = divide(a->values, b->values, a->size);
 	m->size = a->size;
 	return m;
 }
 
-//сравние матриц
-bool Matrix::Equals(Matrix* a, Matrix* b){
+bool SMatrix::Equals(SMatrix* a, SMatrix* b)
+{
 	if (a->size != b->size)
 		return false;
-	for (int i = 0; i < a->size; ++i){
-		for (int j = 0; j < a->size; ++j){
+	for (int i = 0; i < a->size; i++){
+		for (int j = 0; j < a->size; j++){
 			if (fabs(a->values[i][j] - b->values[i][j]) > 0.001)
 			{
 				printf("matrix 1: %f; matrix 2: %f [%d,%d]\n", a->values[i][j], b->values[i][j], i, j);
